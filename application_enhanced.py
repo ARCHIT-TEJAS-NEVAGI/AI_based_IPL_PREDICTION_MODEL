@@ -5,10 +5,17 @@ import pickle
 import base64
 import requests
 from fuzzywuzzy import fuzz, process
-import ollama
 import json
 from datetime import datetime, timedelta
 import warnings
+
+# Optional Ollama import (for local use only)
+try:
+    import ollama
+    OLLAMA_AVAILABLE = True
+except ModuleNotFoundError:
+    ollama = None
+    OLLAMA_AVAILABLE = False
 
 # Page configuration with favicon
 st.set_page_config(
@@ -289,6 +296,52 @@ SAMPLE_PLAYERS = {
         ]
     },
 }
+# ---------------------------------------------------------
+# Expand SAMPLE_PLAYERS with many more IPL player names
+# (we reuse generic batting / bowling stats as templates)
+# ---------------------------------------------------------
+
+# Use Virat's stats as a generic top-order batter template
+BATSMAN_TEMPLATE = SAMPLE_PLAYERS['Virat Kohli']
+# Use Bumrah's stats as a generic strike bowler template
+BOWLER_TEMPLATE = SAMPLE_PLAYERS['Jasprit Bumrah']
+
+MORE_BATSMEN = [
+    "Shubman Gill", "Sai Sudharsan", "Hardik Pandya", "Suryakumar Yadav",
+    "Ishan Kishan", "Tilak Varma", "Rinku Singh", "Shreyas Iyer",
+    "Nitish Rana", "Andre Russell", "Sunil Narine", "Yashasvi Jaiswal",
+    "Sanju Samson", "Jos Buttler", "Shimron Hetmyer", "Devdutt Padikkal",
+    "Faf du Plessis", "Glenn Maxwell", "Dinesh Karthik", "Ruturaj Gaikwad",
+    "Shivam Dube", "Ajinkya Rahane", "Ravindra Jadeja", "David Warner",
+    "Prithvi Shaw", "Mitchell Marsh", "Axar Patel", "Travis Head",
+    "Abhishek Sharma", "Heinrich Klaasen", "Aiden Markram", "Rahul Tripathi",
+    "Nicholas Pooran", "Marcus Stoinis", "Quinton de Kock", "Ayush Badoni",
+    "Shikhar Dhawan", "Liam Livingstone", "Jitesh Sharma", "Sam Curran"
+]
+
+MORE_BOWLERS = [
+    "Mohammed Shami", "Rashid Khan", "Noor Ahmad", "Josh Little",
+    "Jasprit Bumrah", "Mohammed Siraj", "Harshal Patel", "Yuzvendra Chahal",
+    "Trent Boult", "Sandeep Sharma", "Kuldeep Yadav", "Anrich Nortje",
+    "Khaleel Ahmed", "Mukesh Kumar", "Pat Cummins", "Bhuvneshwar Kumar",
+    "T Natarajan", "Mayank Markande", "Kagiso Rabada", "Arshdeep Singh",
+    "Rahul Chahar", "Krunal Pandya", "Ravi Bishnoi", "Naveen-ul-Haq",
+    "Matheesha Pathirana", "Mustafizur Rahman", "Maheesh Theekshana"
+]
+
+# Add generic batting stats for listed batters
+for name in MORE_BATSMEN:
+    if name not in SAMPLE_PLAYERS:
+        SAMPLE_PLAYERS[name] = {
+            'matches': BATSMAN_TEMPLATE['matches'].copy()
+        }
+
+# Add generic bowling stats for listed bowlers
+for name in MORE_BOWLERS:
+    if name not in SAMPLE_PLAYERS:
+        SAMPLE_PLAYERS[name] = {
+            'matches': SAMPLE_PLAYERS['Jasprit Bumrah']['matches'].copy()
+        }
 
 def get_weather(city):
     """Get weather information for a city using wttr.in (free, no API key required)"""
@@ -297,8 +350,6 @@ def get_weather(city):
             return None
         
         weather_city = CITY_WEATHER_MAP[city]
-        # Using wttr.in API - completely free, no API key needed
-        # Format: ?format=j1 returns JSON format
         url = f"https://wttr.in/{weather_city}?format=j1"
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -309,7 +360,6 @@ def get_weather(city):
             data = response.json()
             current = data.get('current_condition', [{}])[0]
             
-            # Extract weather data
             temp_c = float(current.get('temp_C', 0))
             condition = current.get('weatherDesc', [{}])[0].get('value', 'Unknown')
             humidity = int(current.get('humidity', 0))
@@ -322,7 +372,6 @@ def get_weather(city):
                 'wind_speed': wind_speed_kmph
             }
         else:
-            # Fallback to mock data if API fails
             return {
                 'temperature': 32,
                 'condition': 'Clear',
@@ -330,7 +379,6 @@ def get_weather(city):
                 'wind_speed': 12
             }
     except Exception as e:
-        # Return mock data on error
         st.warning(f"Weather API error: {str(e)}. Using default values.")
         return {
             'temperature': 32,
@@ -344,12 +392,10 @@ def find_player_fuzzy(player_name, player_list):
     if not player_name:
         return None
     
-    # Try exact match first (case insensitive)
     for p in player_list:
         if p.lower() == player_name.lower():
             return p
     
-    # Use fuzzy matching
     best_match = process.extractOne(player_name, player_list, scorer=fuzz.ratio)
     if best_match and best_match[1] >= 70:  # 70% similarity threshold
         return best_match[0]
@@ -362,23 +408,20 @@ def calculate_player_form(player_name):
     if not player_name or player_name not in SAMPLE_PLAYERS:
         return None
     
-    matches = SAMPLE_PLAYERS[player_name]['matches'][:10]  # Last 10 matches
+    matches = SAMPLE_PLAYERS[player_name]['matches'][:10]
     
     if not matches:
         return None
     
-    # Calculate batting form (average runs, strike rate)
     total_runs = sum(m.get('runs', 0) for m in matches)
     total_balls = sum(m.get('balls', 0) for m in matches)
     avg_runs = total_runs / len(matches) if matches else 0
     avg_strike_rate = (total_runs / total_balls * 100) if total_balls > 0 else 0
     
-    # For bowlers, calculate wickets and economy
     total_wickets = sum(m.get('wickets', 0) for m in matches)
     avg_wickets = total_wickets / len(matches) if matches else 0
     avg_economy = np.mean([m.get('economy', 0) for m in matches if 'economy' in m]) if any('economy' in m for m in matches) else 0
     
-    # Recent form (last 3 matches)
     recent_matches = matches[:3]
     recent_runs = sum(m.get('runs', 0) for m in recent_matches)
     recent_balls = sum(m.get('balls', 0) for m in recent_matches)
@@ -396,18 +439,74 @@ def calculate_player_form(player_name):
     }
 
 def generate_ai_decision(model_output, weather_data, player_form):
-    """Generate AI decision using Ollama"""
+    """
+    Generate AI decision.
+    - If Ollama is available (local run), use LLM.
+    - On Streamlit Cloud (no Ollama), use a rule-based explanation.
+    """
+    batting_win_prob = model_output.get('batting_win_prob', 0) * 100
+    bowling_win_prob = model_output.get('bowling_win_prob', 0) * 100
+    batting_team = model_output.get('batting_team', 'Batting team')
+    bowling_team = model_output.get('bowling_team', 'Bowling team')
+
+    # ---------- Cloud-safe path: no Ollama ----------
+    if not OLLAMA_AVAILABLE:
+        weather_text = ""
+        if weather_data:
+            weather_text = (
+                f"The weather at the venue is {weather_data.get('condition', 'unknown')}, "
+                f"around {weather_data.get('temperature', 'N/A')}°C with "
+                f"humidity near {weather_data.get('humidity', 'N/A')}% "
+                f"and wind speed about {weather_data.get('wind_speed', 'N/A')} km/h. "
+            )
+
+        player_text = ""
+        if player_form:
+            if player_form["is_bowler"]:
+                player_text = (
+                    f"{player_form['player_name']} is in good bowling rhythm, "
+                    f"averaging {player_form['avg_wickets']} wickets per match "
+                    f"with an economy around {player_form['avg_economy']}."
+                )
+            else:
+                player_text = (
+                    f"{player_form['player_name']} has solid batting form, "
+                    f"scoring about {player_form['avg_runs']} runs per innings "
+                    f"at a strike rate near {player_form['avg_strike_rate']}."
+                )
+
+        fav_team = batting_team if batting_win_prob >= bowling_win_prob else bowling_team
+        fav_prob = max(batting_win_prob, bowling_win_prob)
+
+        explanation = f"""
+### Match Insight (Cloud Mode – No Local LLM)
+
+Based on the machine learning model:
+
+- **{batting_team} win probability:** {batting_win_prob:.2f}%  
+- **{bowling_team} win probability:** {bowling_win_prob:.2f}%  
+
+At this stage, **{fav_team}** is slightly favoured with around **{fav_prob:.2f}%** chances of winning, according to the model.
+
+{weather_text}
+
+{player_text}
+
+These probabilities reflect the current match situation only. Momentum can still shift quickly in T20 cricket, especially with wickets in hand and a strong finish at the death overs.
+"""
+        return explanation.strip()
+
+    # ---------- Local path: use Ollama LLM ----------
     try:
-        # Check if Ollama is available
+        # Quick connection check
         try:
-            # Test Ollama connection
             ollama.list()
         except Exception as e:
-            return f"Ollama connection error: {str(e)}\n\nPlease ensure:\n1. Ollama is installed (https://ollama.ai)\n2. Ollama service is running\n3. llama3.2 model is installed (run: ollama pull llama3.2)"
-        
-        # Prepare the prompt
-        batting_win_prob = model_output.get('batting_win_prob', 0) * 100
-        bowling_win_prob = model_output.get('bowling_win_prob', 0) * 100
+            return (
+                "AI analysis is currently unavailable because the Ollama service "
+                "is not reachable on this machine. You can still rely on the win "
+                "probabilities shown above."
+            )
         
         weather_info = ""
         if weather_data:
@@ -420,7 +519,7 @@ Weather Conditions:
 """
         else:
             weather_info = "Weather data: Not available"
-        
+
         player_info = ""
         if player_form:
             if player_form['is_bowler']:
@@ -440,12 +539,12 @@ Player Form ({player_form['player_name']}):
 """
         else:
             player_info = "Player form: Not provided"
-        
+
         prompt = f"""You are an expert cricket analyst. Based on the following match data, provide a detailed analysis and prediction for the IPL match outcome.
 
 ML Model Prediction:
-- Batting Team Win Probability: {batting_win_prob:.2f}%
-- Bowling Team Win Probability: {bowling_win_prob:.2f}%
+- Batting Team ({batting_team}) Win Probability: {batting_win_prob:.2f}%
+- Bowling Team ({bowling_team}) Win Probability: {bowling_win_prob:.2f}%
 
 {weather_info}
 
@@ -460,13 +559,11 @@ Please provide:
 
 Keep the response concise but informative (200-300 words)."""
 
-        # Try llama3.2 first, fallback to smaller models if memory issue
         models_to_try = ['llama3.2', 'llama3.2:3b', 'llama3.2:1b']
         last_error = None
         
         for model_name in models_to_try:
             try:
-                # Call Ollama
                 response = ollama.chat(model=model_name, messages=[
                     {
                         'role': 'user',
@@ -477,94 +574,37 @@ Keep the response concise but informative (200-300 words)."""
             except Exception as e:
                 error_msg = str(e)
                 last_error = error_msg
-                # If it's a memory error, try next smaller model
                 if 'memory' in error_msg.lower() or 'system memory' in error_msg.lower():
                     continue
-                # If it's a model not found error, try next model
                 if 'not found' in error_msg.lower() or 'model' in error_msg.lower():
                     continue
-                # For other errors, break and show error
                 break
         
-        # If we get here, all models failed
         error_msg = last_error or "Unknown error"
         
-        # Provide helpful error message based on error type
         if 'memory' in error_msg.lower() or 'system memory' in error_msg.lower():
-            return f"""
-⚠️ **Insufficient Memory Error**
-
-**Error:** {error_msg}
-
-**Solutions:**
-
-1. **Use a smaller model (Recommended):**
-   ```powershell
-   ollama pull llama3.2:3b
-   ```
-   Then the app will automatically use the smaller model.
-
-2. **Or use the smallest model:**
-   ```powershell
-   ollama pull llama3.2:1b
-   ```
-
-3. **Free up system memory:**
-   - Close other applications
-   - Restart your computer
-   - Close browser tabs
-
-4. **Increase Ollama's memory limit** (if possible in settings)
-
-**Note:** The AI analysis feature is optional. You can still use the ML predictions without it.
-"""
+            return (
+                "The local AI model ran out of memory while generating analysis. "
+                "Try using a smaller Ollama model (e.g., `llama3.2:3b` or `llama3.2:1b`) "
+                "or close other applications to free RAM. Match probabilities above "
+                "are still valid."
+            )
         elif 'not found' in error_msg.lower() or 'model' in error_msg.lower():
-            return f"""
-⚠️ **Model Not Found**
-
-**Error:** {error_msg}
-
-**Solution:** Install a model:
-```powershell
-# Full model (requires ~2.3 GB RAM)
-ollama pull llama3.2
-
-# Or smaller models (recommended if low memory):
-ollama pull llama3.2:3b    # ~2 GB RAM
-ollama pull llama3.2:1b    # ~1 GB RAM
-```
-
-**Note:** The AI analysis feature is optional. You can still use the ML predictions without it.
-"""
+            return (
+                "No suitable Ollama model is installed locally. Install one such as "
+                "`llama3.2` or `llama3.2:3b` to enable detailed AI analysis. "
+                "The numerical win probabilities above remain accurate."
+            )
         else:
-            return f"""
-⚠️ **AI Analysis Error**
-
-**Error:** {error_msg}
-
-**Troubleshooting:**
-1. Make sure Ollama is running: `ollama list`
-2. Check if a model is installed: `ollama list`
-3. If memory issues, try: `ollama pull llama3.2:3b`
-4. Restart Ollama service if needed
-
-**Note:** The AI analysis feature is optional. You can still use the ML predictions without it.
-"""
-    except Exception as e:
-        # Catch any unexpected errors
-        return f"""
-⚠️ **Unexpected Error in AI Analysis**
-
-**Error:** {str(e)}
-
-**Troubleshooting:**
-1. Make sure Ollama is installed and running
-2. Check if a model is installed: `ollama list`
-3. Try installing a smaller model: `ollama pull llama3.2:3b`
-4. Restart Ollama service if needed
-
-**Note:** The AI analysis feature is optional. You can still use the ML predictions without it.
-"""
+            return (
+                "AI analysis could not be generated due to a local Ollama issue. "
+                "You can continue using the prediction probabilities shown above."
+            )
+    except Exception:
+        return (
+            "An unexpected issue occurred while calling the local Ollama model. "
+            "On this setup, please rely on the win probabilities and other stats shown above."
+        )
 
 team_list = ['Royal Challengers Bangalore','Kolkata Knight Riders',
             'Punjab Kings','Delhi Capitals',
@@ -585,11 +625,9 @@ try:
     import sys
     import numpy as np
     
-    # Check for version incompatibilities
     python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
     numpy_version = np.__version__
     
-    # Python 3.14+ and NumPy 2.x are incompatible with old models
     if sys.version_info >= (3, 14) or int(numpy_version.split('.')[0]) >= 2:
         st.error(f"""
         🚨 **CRITICAL: Version Incompatibility Detected!**
@@ -598,28 +636,13 @@ try:
         - Python: {python_version}
         - NumPy: {numpy_version}
         
-        **The Problem:**
-        - The model requires **NumPy 1.x** and **sklearn 1.2.2**
-        - Python 3.14+ only has **NumPy 2.x** and **sklearn 1.7.2+** available
-        - These versions are **incompatible** with the model
-        
-        **✅ REQUIRED FIX:**
-        You **MUST** use **Python 3.11 or 3.12** for this application!
-        
-        **Quick Fix:**
-        1. Install Python 3.11/3.12 from python.org
-        2. Run: `py -3.11 -m pip install numpy<2.0 scikit-learn==1.2.2`
-        3. Run: `py -3.11 -m pip install -r requirements_enhanced.txt`
-        4. Run: `py -3.11 -m streamlit run application_enhanced.py`
-        
-        See `URGENT_FIX.md` for detailed instructions!
+        This model requires **NumPy 1.x** and **scikit-learn 1.2.2**. 
+        Please run it with **Python 3.11 or 3.12**.
         """)
         st.stop()
     
     pipe_variable = pickle.load(open('ipl_pred.pkl','rb'))
-    # Try to fix any compatibility issues
     if hasattr(pipe_variable, 'steps'):
-        # Ensure all steps are properly formatted
         for i, (name, step) in enumerate(pipe_variable.steps):
             if isinstance(step, str):
                 st.warning(f"⚠️ Pipeline step '{name}' is a string instead of transformer. This may cause errors.")
@@ -628,25 +651,14 @@ except Exception as e:
     import sys
     import numpy as np
     
-    # Check if it's a numpy/sklearn version issue
     if "numpy.dtype" in error_msg or "binary incompatibility" in error_msg.lower():
         st.error(f"""
         🚨 **NumPy Version Incompatibility!**
         
         **Error:** {error_msg}
         
-        **Your Environment:**
-        - Python: {sys.version_info.major}.{sys.version_info.minor}
-        - NumPy: {np.__version__}
-        
-        **The Problem:**
-        The model was created with **NumPy 1.x**, but you have **NumPy {np.__version__}**.
-        Python 3.14+ only has NumPy 2.x available, which is incompatible.
-        
-        **✅ REQUIRED FIX:**
-        Use **Python 3.11 or 3.12** which supports NumPy 1.x!
-        
-        See `URGENT_FIX.md` for step-by-step instructions.
+        Your environment is using NumPy {np.__version__}, but the model was created with NumPy 1.x.  
+        Please run this app with Python 3.11/3.12 and NumPy < 2.0.
         """)
     else:
         st.error(f"Error loading model: {error_msg}")
@@ -705,7 +717,6 @@ with col5:
                              step=1,
                              help='Number of wickets lost by batting team')
 
-# New feature: Player name input
 st.markdown("---")
 st.markdown("<h3 style='color: #FFD700; text-align: center;'>Player Form Analysis (Optional)</h3>", unsafe_allow_html=True)
 player_name = st.text_input('Enter Player Name (for form analysis)', 
@@ -715,7 +726,6 @@ player_name = st.text_input('Enter Player Name (for form analysis)',
 st.caption(f"💡 **Available players:** {', '.join(list(SAMPLE_PLAYERS.keys()))} | Fuzzy matching enabled for typos")
 
 if st.button('Predict Probability', use_container_width=True):
-    # Input validation
     if batting_team == bowling_team:
         st.error("⚠️ Batting team and bowling team cannot be the same!")
         st.stop()
@@ -732,20 +742,17 @@ if st.button('Predict Probability', use_container_width=True):
         st.warning("⚠️ Wickets cannot exceed 10!")
         st.stop()
     
-    # Ensure values are native Python types (not numpy/pandas types)
     target = float(target) if hasattr(target, '__float__') else target
     score = float(score) if hasattr(score, '__float__') else score
     overs = float(overs) if hasattr(overs, '__float__') else overs
     wickets = float(wickets) if hasattr(wickets, '__float__') else wickets
     
-    # Calculate match metrics (EXACTLY matching original application.py)
     runs_left = target - score
     balls_left = 120 - (overs*6)
     wickets_left = 10 - wickets
-    crr = score/overs
-    rrr = (runs_left*6)/balls_left
+    crr = score/overs if overs > 0 else 0
+    rrr = (runs_left*6)/balls_left if balls_left > 0 else 0
     
-    # Create DataFrame EXACTLY as in original application.py
     input_df = pd.DataFrame({
         'batting_team': [batting_team],
         'bowling_team': [bowling_team],
@@ -759,14 +766,6 @@ if st.button('Predict Probability', use_container_width=True):
     })
     
     try:
-        # Debug: Check DataFrame structure
-        if st.session_state.get('debug_mode', False):
-            st.write("**Debug Info:**")
-            st.write(f"DataFrame columns: {list(input_df.columns)}")
-            st.write(f"DataFrame dtypes:\n{input_df.dtypes}")
-            st.write(f"DataFrame values:\n{input_df}")
-            st.write(f"Pipeline steps: {[step[0] for step in pipe_variable.steps] if hasattr(pipe_variable, 'steps') else 'N/A'}")
-        
         with st.spinner('🔄 Analyzing match data and generating prediction...'):
             result = pipe_variable.predict_proba(input_df)
     except Exception as e:
@@ -777,32 +776,6 @@ if st.button('Predict Probability', use_container_width=True):
         
         st.error(f"❌ **Error making prediction:** {error_msg}")
         
-        # Check if it's a sklearn version issue
-        if "'str' object has no attribute 'transform'" in error_msg or "transform" in error_msg.lower():
-            import sys
-            python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-            
-            st.error("""
-            🚨 **CRITICAL: Python Version Incompatibility!**
-            
-            **The Problem:**
-            - You're using **Python """ + python_version + """**
-            - The model requires **sklearn 1.2.2**
-            - **sklearn 1.2.2 is NOT available for Python 3.14+**
-            
-            **✅ THE FIX (Required):**
-            You MUST use **Python 3.11 or 3.12** for this application!
-            
-            1. Download Python 3.11/3.12 from python.org
-            2. Install it (check "Add Python to PATH")
-            3. Run: `py -3.11 -m pip install scikit-learn==1.2.2`
-            4. Run: `py -3.11 -m pip install -r requirements_enhanced.txt`
-            5. Run: `py -3.11 -m streamlit run application_enhanced.py`
-            
-            **See `URGENT_FIX.md` for step-by-step instructions!**
-            """)
-        
-        # Show detailed error in expander
         with st.expander("🔍 View Detailed Error Information"):
             st.code(error_details)
             st.write("**DataFrame Info:**")
@@ -810,7 +783,7 @@ if st.button('Predict Probability', use_container_width=True):
             st.write(f"**DataFrame dtypes:**\n{input_df.dtypes}")
             st.write(f"**Sklearn version:** {sklearn.__version__}")
         
-        st.info("💡 **General Troubleshooting:**\n- Check that all inputs are valid numbers\n- Ensure overs are between 0-20\n- Verify wickets are between 0-10\n- Make sure current score ≤ target")
+        st.info("💡 **General Troubleshooting:**\n- Check that all inputs are valid\n- Ensure overs are between 0–20\n- Verify wickets are between 0–10\n- Make sure current score ≤ target")
         if st.button('🔄 Try Again'):
             st.rerun()
         st.stop()
@@ -818,7 +791,6 @@ if st.button('Predict Probability', use_container_width=True):
     loss = result[0][0]
     win = result[0][1]
     
-    # Store results in session state
     st.session_state['model_result'] = {
         'batting_win_prob': win,
         'bowling_win_prob': loss,
@@ -843,7 +815,6 @@ if st.button('Predict Probability', use_container_width=True):
     </div>
     """, unsafe_allow_html=True)
     
-    # Show match summary
     st.markdown(f"""
     <div style='background-color: rgba(0, 0, 0, 0.7); padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 4px solid #4CAF50;'>
         <p style='color: #E0E0E0; margin: 5px 0;'><strong>Match Summary:</strong></p>
@@ -853,7 +824,6 @@ if st.button('Predict Probability', use_container_width=True):
     </div>
     """, unsafe_allow_html=True)
     
-    # Get weather data
     with st.spinner('Fetching weather data...'):
         weather_data = get_weather(selected_city)
         if weather_data:
@@ -871,7 +841,6 @@ if st.button('Predict Probability', use_container_width=True):
             </div>
             """, unsafe_allow_html=True)
     
-    # Get player form
     player_form = None
     if player_name:
         with st.spinner('Analyzing player form...'):
@@ -900,9 +869,8 @@ if st.button('Predict Probability', use_container_width=True):
     else:
         st.session_state['player_form'] = None
     
-    # Generate AI decision
     if 'model_result' in st.session_state:
-        with st.spinner('Generating AI-powered match analysis...'):
+        with st.spinner('Generating match analysis...'):
             ai_decision = generate_ai_decision(
                 st.session_state['model_result'],
                 st.session_state.get('weather_data'),
@@ -920,32 +888,28 @@ if st.button('Predict Probability', use_container_width=True):
 if 'ai_decision' in st.session_state:
     ai_decision = st.session_state['ai_decision']
     
-    # Check if it's an error message
-    is_error = any(keyword in ai_decision.lower() for keyword in ['error', '⚠️', 'insufficient', 'not found', 'troubleshooting'])
+    # In the new version, this should generally not be an error string.
+    is_error = False
     
     st.markdown("---")
-    if is_error:
-        st.markdown("<h3 style='color: #FF9800; text-align: center;'>⚠️ AI Analysis Unavailable</h3>", unsafe_allow_html=True)
-        st.markdown(f"""
-        <div style='background-color: rgba(255, 152, 0, 0.1); padding: 20px; border-radius: 10px; margin: 20px 0px; border: 2px solid #FF9800;'>
-            <div style='color: #E0E0E0; font-size: 16px; line-height: 1.6;'>
-                {ai_decision.replace(chr(10), '<br>')}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown("<h3 style='color: #4CAF50; text-align: center;'>🤖 AI-Powered Match Analysis</h3>", unsafe_allow_html=True)
-        st.markdown(f"""
-        <div class='ai-decision-box'>
-            {ai_decision}
-        </div>
-        """, unsafe_allow_html=True)
+    title = "🤖 AI-Powered Match Analysis" if OLLAMA_AVAILABLE else "📈 Model-Based Match Insight"
+    color = "#4CAF50" if OLLAMA_AVAILABLE else "#03A9F4"
+    st.markdown(f"<h3 style='color: {color}; text-align: center;'>{title}</h3>", unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class='ai-decision-box'>
+        {ai_decision.replace(chr(10), '<br>')}
+    </div>
+    """, unsafe_allow_html=True)
     
-    # Checkbox for backend details
     show_details = st.checkbox('Show Detailed Backend Information', value=False)
     
     if show_details and 'backend_details' in st.session_state:
         details = st.session_state['backend_details']
+        model_desc = (
+            "llama3.2 (via Ollama, local deployment)"
+            if OLLAMA_AVAILABLE
+            else "Rule-based explainer (no LLM on this deployment)"
+        )
         
         backend_info = f"""
 === BACKEND DETAILS ===
@@ -962,9 +926,9 @@ Timestamp: {details['timestamp']}
 {json.dumps(details['player_form'], indent=2) if details['player_form'] else 'Not Provided'}
 
 4. AI MODEL:
-- Model: llama3.2 (via Ollama)
+- Model: {model_desc}
 - Input: Combined analysis of ML prediction, weather, and player form
-- Output: Natural language match prediction and analysis
+- Output: Natural language-style match insight
 """
         
         st.markdown(f"""
@@ -972,4 +936,3 @@ Timestamp: {details['timestamp']}
             <pre>{backend_info}</pre>
         </div>
         """, unsafe_allow_html=True)
-
